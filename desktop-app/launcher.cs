@@ -636,7 +636,25 @@ namespace QQBridgeConsole
         {
             try
             {
-                string url = "http://127.0.0.1:" + ConsolePort + "/" + (hash ?? string.Empty);
+                // 7788 现在有 token 门禁：裸打开 / 会落到 401 表单。
+                // 启动器本来就能读 state/console-token，这里直接把 token 带进 URL，
+                // 由服务端种下 HttpOnly cookie，后续 UI 的 fetch/SSE 自动带 cookie。
+                // hash 要留在 query 之后，否则 ?token= 会变成片段的一部分。
+                string route = hash ?? string.Empty;
+                string fragment = string.Empty;
+                int hashIndex = route.IndexOf('#');
+                if (hashIndex >= 0)
+                {
+                    fragment = route.Substring(hashIndex);
+                    route = route.Substring(0, hashIndex);
+                }
+                string url = "http://127.0.0.1:" + ConsolePort + "/" + route;
+                string token = ReadToken();
+                if (!string.IsNullOrEmpty(token))
+                {
+                    url += (url.IndexOf('?') >= 0 ? "&" : "?") + "token=" + Uri.EscapeDataString(token);
+                }
+                url += fragment;
 
                 if (edgeExe != null)
                 {

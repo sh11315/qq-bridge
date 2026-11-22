@@ -1,0 +1,30 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  audit:
+    # 项目只在 Windows 上部署（launcher / 计划任务 / 路径都按 win32 写），
+    # 用 windows-latest 才能复现真实的行尾、reg.exe 与 spawn 行为。
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # npm ci 会跑 postinstall（scripts/patch-snowluma-sdk.mjs）。
+      # 不用 --ignore-scripts：补丁本身是仓库可复现的一部分。
+      - run: npm ci
+
+      - name: audit suite
+        run: node scripts/test-audit.mjs

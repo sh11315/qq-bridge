@@ -5007,10 +5007,25 @@ async function waitForWorkbuddySlot(key, sessionId) {
         sendJson({ ok: false, error: `Host 头不被允许（${hostHeader || '缺失'}）：控制台只接受本机回环访问` }, 403);
         return;
       }
-      // 控制台鉴权：所有请求需带 x-console-token 或 ?token=
+      // 控制台鉴权：所有请求需带 x-console-token、?token=，或 7788 下发的 HttpOnly cookie。
       // 定长比较：`!==` 会在第一个不同的字符处短路，理论上可被本机进程用响应时延逐字节试探。
       // 令牌是 192 bit 随机值且只监听回环，所以这是纵深防御而非在野漏洞。
-      const suppliedToken = String(url.searchParams.get('token') ?? req.headers['x-console-token'] ?? '');
+      // 不依赖 console-auth.js 的 parseCookie：桥接的单文件回归测试会把这段代码
+      // 直接塞进 vm 里跑（拿不到 import），所以这里用等价的内联解析，保持零依赖。
+      const cookieHeader = String(req.headers.cookie ?? '');
+      const cookiePrefix = 'qqb_console_token=';
+      let cookieToken = '';
+      for (const part of cookieHeader.split(';')) {
+        const item = part.trim();
+        if (!item.startsWith(cookiePrefix)) continue;
+        try {
+          cookieToken = decodeURIComponent(item.slice(cookiePrefix.length));
+        } catch {
+          cookieToken = item.slice(cookiePrefix.length);
+        }
+        break;
+      }
+      const suppliedToken = String(url.searchParams.get('token') ?? req.headers['x-console-token'] ?? cookieToken ?? '');
       const tokenMatches = (() => {
         if (!consoleToken) return false; // 上面已拒绝空令牌；真出现也只许失败关闭，绝不 return true
         const a = Buffer.from(suppliedToken, 'utf8');

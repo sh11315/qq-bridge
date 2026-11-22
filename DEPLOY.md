@@ -355,14 +355,15 @@ cd C:\qq-bridge
 ```
 
 - 自动打开 `http://127.0.0.1:7788/?token=<state\console-token>`；
-- 也可以双击 `desktop-app\QQBridgeConsole.exe`，用 Edge 应用窗口打开同一个控制台；
+- 也可以双击 `desktop-app\QQBridgeConsole.exe`，用 Edge 应用窗口打开同一个控制台（启动器会读 `state\console-token` 并把 token 带进 URL）；
 - 端口改 `config.json` 的 `unifiedConsole.port`（改完重启控制台）。
+- **令牌门禁**：除 `/api/health`、`/api/version`、`/vendor/*` 外，页面和 `/api/*` 都要令牌。首次带 `?token=` 打开后服务端种 `qqb_console_token` HttpOnly cookie，之后浏览器里的 fetch/SSE 自动带；裸开 `http://127.0.0.1:7788/` 会看到 401 表单。`/go/bridge` 只 302，不再把 token 放进 `Location`。
+- **只接受本机回环**：Host 必须是 `127.0.0.1` / `localhost` / `[::1]` 加实际端口；反向代理/端口转发会被 403。要远程访问请用 SSH 隧道。
 
-确认健康：
+确认健康（`/api/health` 是公开探活，不需要 token）：
 
 ```powershell
-$tok = Get-Content .\state\console-token -Raw
-Invoke-RestMethod http://127.0.0.1:7788/api/health -Headers @{ "x-console-token" = $tok.Trim() }
+Invoke-RestMethod http://127.0.0.1:7788/api/health
 ```
 
 期望 `ok=true`。

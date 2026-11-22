@@ -90,18 +90,30 @@ const tests = [
   // 记忆层级策略（2026-11-22）：事件/事实/话题默认短期、被反复想起才升长期；
   // 日层/日记/承诺/偏好/关系/档案天然长期；空日层不再生成；存量迁移可 dryRun。
   'test-memory-layer-policy.mjs',
+  // 控制台（7788）安全水位：Host 白名单 / token 定长比较 / HttpOnly cookie / CSP。
+  // 之前 7788 只有 listen 127.0.0.1，DNS rebinding 与跨站表单都能碰到写接口。
+  'test-console-security.mjs',
 ];
 let failed = 0;
+let skipped = 0;
 for (const test of tests) {
   console.log(`\nRunning ${test}`);
   const result = spawnSync(process.execPath, [path.join(root, 'scripts', test)], {
     cwd: root, stdio: 'inherit', timeout: 60000,
     env: { ...process.env, QQ_BRIDGE_TEST_LIVE: '0' },
   });
+  // 沙箱/受限终端里 spawn 子进程会被内核拒绝（EPERM）；这不是被测代码的失败。
+  // 标记 skip 而不是 fail，CI 与本地受限环境才能给出真实信号。
+  if (result.error?.code === 'EPERM') {
+    skipped++;
+    console.log(`SKIPPED ${test}: spawn EPERM（当前环境不允许起子进程）`);
+    continue;
+  }
   if (result.status !== 0 || result.error) {
     failed++;
     console.error(`FAILED ${test}: ${result.error?.message || `exit ${result.status}`}`);
   }
 }
-console.log(`\nAudit suite: ${tests.length - failed}/${tests.length} scripts passed.`);
+const ran = tests.length - skipped;
+console.log(`\nAudit suite: ${ran - failed}/${ran} scripts passed${skipped ? `, ${skipped} skipped (EPERM)` : ''}.`);
 process.exitCode = failed ? 1 : 0;

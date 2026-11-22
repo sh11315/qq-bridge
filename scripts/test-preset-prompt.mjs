@@ -134,11 +134,19 @@ test('删掉安全不变量或正文过短时阻断保存（保护 AI 效果与�
 
 test('写回沿用文件主导行尾，且不吞掉块尾空行', () => {
   const next = renderPresetPromptYaml(source, originalPrefix);
+  // 不硬编码 CRLF：干净 clone（.gitattributes 的 *.yml eol=lf）是 LF，
+  // Windows 本机工作区可能是 CRLF。断言「与源文件同一种行尾」才是真正的不变量。
+  const sourceCrlf = (source.match(/\r\n/g) ?? []).length;
   const crlf = (next.match(/\r\n/g) ?? []).length;
   const lfOnly = (next.match(/\n/g) ?? []).length - crlf;
-  assert.ok(crlf > 0, 'CRLF 文件写回后应仍使用 CRLF');
-  assert.equal(lfOnly, 0, '写回后不应残留/新增 LF-only 行');
-  assert.ok(next.includes('prefix: |-\r\n'), '新增行应使用 CRLF');
+  if (sourceCrlf > 0) {
+    assert.ok(crlf > 0, 'CRLF 文件写回后应仍使用 CRLF');
+    assert.equal(lfOnly, 0, '写回后不应残留/新增 LF-only 行');
+    assert.ok(next.includes('prefix: |-\r\n'), '新增行应使用 CRLF');
+  } else {
+    assert.equal(crlf, 0, 'LF 文件写回后不应出现 CRLF');
+    assert.ok(next.includes('prefix: |-\n'), '新增行应使用 LF');
+  }
   // 块之后的内容（空行、注释、后续条目）必须逐字保留
   const before = locatePresetPromptBlock(source);
   const after = locatePresetPromptBlock(next);

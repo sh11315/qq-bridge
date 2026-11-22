@@ -51,9 +51,17 @@ import { MemoryService } from '../src/memory/service.mjs';
 import { MemoryStore } from '../src/memory/store.mjs';
 import { memoryTier, publicEntity, publicMemory, relationGroupOf, relationLabelOf, textSimilarity } from '../src/memory/model.mjs';
 import { summarizeSamples, formatLifeHint } from '../src/core/life-log.mjs';
+import { CONSOLE_CSP, isAllowedLoopbackHost, sessionCookie, tokensMatch, tokenFromRequest } from '../src/console-auth.js';
 
 const CONSOLE_VERSION = '2.0.0';
 const STARTED_AT = Date.now();
+// 控制台页面统一安全头：CSP 挡外部脚本/点击劫持，nosniff 挡 MIME 嗅探。
+const CONSOLE_SECURITY_HEADERS = Object.freeze({
+  'Content-Security-Policy': CONSOLE_CSP,
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'no-referrer',
+});
 // 是否以管理员权限运行（Windows 高完整性级别 S-1-16-12288；非 Windows 用 uid）。
 const IS_ELEVATED = (() => {
   try {
@@ -2413,9 +2421,29 @@ function readConsoleToken() {
   try { return fs.readFileSync(CONSOLE_TOKEN_FILE, 'utf8').trim(); } catch { return ''; }
 }
 
+// 控制台可能比桥接先启动（首次开包、桥接崩了手动开控制台），此时 state/console-token
+// 还不存在。这里按桥接同样的规则兜底生成一次并落盘，避免「控制台起来了但所有请求 401」。
+let generatedConsoleToken = '';
+function consoleTokenValue() {
+  const configured = String(paths.cfg.consoleToken || '').trim();
+  if (configured) return configured;
+  const fromFile = readConsoleToken();
+  if (fromFile) return fromFile;
+  if (generatedConsoleToken) return generatedConsoleToken;
+  generatedConsoleToken = crypto.randomBytes(32).toString('base64url');
+  try {
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    fs.writeFileSync(CONSOLE_TOKEN_FILE, generatedConsoleToken, { mode: 0o600 });
+    pushLog('console', '控制台令牌未配置，已自动生成 state/console-token');
+  } catch (err) {
+    pushLog('console', `控制台令牌生成失败：${err?.message || err}`, 'warn');
+  }
+  return generatedConsoleToken;
+}
+
 /** 调 3100 的接口做「热生效」。桥接没起来时返回 {ok:false, offline:true} 而不是抛错。 */
 async function callBridge(pathname, method = 'GET', body = null, timeout = 8000) {
-  const token = paths.cfg.consoleToken || readConsoleToken();
+  const token = consoleTokenValue();
   const url = `http://127.0.0.1:${paths.bridgePort}${pathname}`;
   try {
     const res = await fetch(url, {
@@ -4362,6 +4390,39 @@ const server = http.createServer(async (req, res) => {
   const pathname = url.pathname;
   const dryRun = url.searchParams.get('dryRun') === '1';
 
+  // Host 白名单（DNS rebinding 硬化）：只接受 127.0.0.1 / localhost / [::1] + 实际端口。
+  // 反代/端口转发会被一并拒绝——要远程访问请用 SSH 隧道并自行承担。
+  const boundPort = server.address()?.port ?? paths.port;
+  if (!isAllowedLoopbackHost(req.headers.host, boundPort)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
+    res.end('Host 头不被允许：控制台只接受本机回环访问');
+    return;
+  }
+
+  // 统一 token 门禁：query（首次 /?token=）/ header（脚本）/ HttpOnly cookie（浏览器）。
+  // 校验通过就续写 cookie，之后页面里的 fetch / SSE / img 都不用再手写 token。
+  const expectedToken = consoleTokenValue();
+  const authed = tokensMatch(tokenFromRequest(req, url), expectedToken);
+  if (authed) res.setHeader('Set-Cookie', sessionCookie(expectedToken));
+  const publicPath = pathname === '/api/health'
+    || pathname === '/api/version'
+    || pathname === '/favicon.ico'
+    || pathname === '/apple-touch-icon.png'
+    || pathname.startsWith('/vendor/');
+  if (!publicPath && !authed) {
+    if (pathname.startsWith('/api/')) {
+      return json(res, 401, { ok: false, message: '未授权：请提供控制台访问令牌' });
+    }
+    res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', ...CONSOLE_SECURITY_HEADERS });
+    res.end('<!doctype html><meta charset="utf-8"><title>需要控制台令牌</title>'
+      + '<style>body{font:15px system-ui;margin:12vh auto;max-width:420px;color:#222}'
+      + 'input{width:100%;padding:10px;margin:8px 0;box-sizing:border-box}'
+      + 'button{padding:10px 18px}</style>'
+      + '<h1>需要控制台令牌</h1><p>输入 <code>state/console-token</code> 里的值，或重启控制台查看启动日志。</p>'
+      + '<form method="get" action="/"><input name="token" type="password" autofocus autocomplete="off" placeholder="控制台令牌"><button>进入</button></form>');
+    return;
+  }
+
   try {
     // 写操作统一要求 JSON：阻止任意网页用表单跨站触发启停/改配置
     if (req.method !== 'GET' && !String(req.headers['content-type'] || '').includes('application/json')) {
@@ -4371,7 +4432,7 @@ const server = http.createServer(async (req, res) => {
     // ── 静态页 ─────────────────────────────────────────────────────────
     if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html' || pathname === '/ui')) {
       const html = fs.readFileSync(UI_PATH);
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', ...CONSOLE_SECURITY_HEADERS });
       res.end(html);
       return;
     }
@@ -4390,7 +4451,7 @@ const server = http.createServer(async (req, res) => {
         });
         if (!fs.existsSync(nebulaFile)) return json(res, 500, { ok: false, message: '生成手绘星系失败' });
       }
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', ...CONSOLE_SECURITY_HEADERS });
       return res.end(fs.readFileSync(nebulaFile));
     }
 
@@ -4407,7 +4468,7 @@ const server = http.createServer(async (req, res) => {
           return json(res, 500, { ok: false, message: '生成记忆银河失败：' + String((r.err && r.err.message) || (r.stdout || '').slice(0, 300)) });
         }
       }
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', ...CONSOLE_SECURITY_HEADERS });
       return res.end(fs.readFileSync(galaxyFile));
     }
 
@@ -4442,10 +4503,9 @@ const server = http.createServer(async (req, res) => {
       return res.end(vendorData);
     }
 
-    // ── 跳转（不把 token 暴露在页面里，由服务端 302 带上）──────────────
+    // ── 跳转（token 已经换成 HttpOnly cookie，不再拼进 URL / 浏览器历史）──
     if (req.method === 'GET' && (pathname === '/go/bridge' || pathname === '/go/relay')) {
-      const token = paths.cfg.consoleToken || readConsoleToken();
-      const target = `http://127.0.0.1:${paths.bridgePort}/?token=${encodeURIComponent(token)}`;
+      const target = `http://127.0.0.1:${paths.bridgePort}/`;
       res.writeHead(302, { Location: target, 'Cache-Control': 'no-store' });
       res.end();
       return;
@@ -4698,7 +4758,7 @@ const server = http.createServer(async (req, res) => {
       const origin = String(req.headers.origin || '');
       const referer = String(req.headers.referer || '');
       const tokenHdr = String(req.headers['x-console-token'] || '');
-      const expectToken = paths.cfg.consoleToken || readConsoleToken();
+      const expectToken = consoleTokenValue();
       const sameOrigin = (u) => {
         try {
           const h = new URL(u).host;
@@ -6302,7 +6362,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/api/photo-memory/original') {
       const id = String(url.searchParams.get('id') || '').trim();
       if (!id) return json(res, 400, { ok: false, message: 'id 不能为空' });
-      const token = paths.cfg.consoleToken || readConsoleToken();
+      const token = consoleTokenValue();
       try {
         const r = await fetch(`http://127.0.0.1:${paths.bridgePort}/api/photo-memory/original?id=${encodeURIComponent(id)}`, {
           headers: token ? { 'x-console-token': token } : {},
