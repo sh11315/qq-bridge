@@ -6850,7 +6850,7 @@ server.on('error', (err) => {
     console.log('');
     process.exit(0);
   }
-  console.error('统一控制台启动失败：', err.message);
+  console.error('统一控制台启动失败：', redactSecrets(err.message));
   process.exit(1);
 });
 
