@@ -250,6 +250,46 @@ await test('handleIncoming：mention-only 群聊只处理 @ / 引用 / 名字，
   }
 });
 
+await test('handleIncoming：chat 群聊里非 owner 的 / 命令不抢话，只有被叫到才回提示', async () => {
+  const h = await bridgeHarness({ config: { agentPreset: 'qq-chat' } });
+  try {
+    h.setMode('chat');
+    const event = (message, extra = {}) => ({
+      self_id: BOT_QQ,
+      group_id: 456,
+      user_id: 111,
+      message_id: 3001,
+      message,
+      sender: { user_id: 111, nickname: '路人', card: '' },
+      ...extra
+    });
+    const beforePrompts = h.calls.prompts.length;
+    const beforeSent = h.calls.sent.length;
+
+    await h.handleIncoming('group', 456, event([
+      { type: 'text', data: { text: '/status' } }
+    ]), h.cfg);
+    assert.equal(h.calls.sent.length, beforeSent, '没 @ / 没引用 / 没叫名字时不应回管理提示');
+    assert.equal(h.calls.prompts.length, beforePrompts, '也不应把路人的 / 命令送进模型');
+
+    // 引用机器人自己的消息再发 / 命令：算「在对机器人说话」，可以回提示。
+    h.bot.getMessage = async () => ({
+      group_id: 456,
+      sender: { user_id: BOT_QQ, nickname: '星辰' },
+      message: [{ type: 'text', data: { text: '上一条' } }]
+    });
+    await h.handleIncoming('group', 456, event([
+      { type: 'reply', data: { id: '9002' } },
+      { type: 'text', data: { text: '/status' } }
+    ]), h.cfg);
+    assert.equal(h.calls.sent.length, beforeSent + 1, '引用机器人后应回一句提示');
+    assert.match(h.calls.sent.at(-1).text, /管理命令仅管理员可用/);
+    assert.equal(h.calls.prompts.length, beforePrompts, '提示不应送进模型');
+  } finally {
+    await h.close();
+  }
+});
+
 await test('POST /api/mode 接受 mention-only；DSH 旧 schema 拒绝时 refreshMode 仍保留', async () => {
   const h = await bridgeHarness({ config: { consolePort: 0, agentPreset: 'qq-chat' } });
   let server = null;

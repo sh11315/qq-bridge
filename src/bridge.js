@@ -101,7 +101,7 @@ import {
   TURN_SUMMARY_MAX_CHARS
 } from './core/turn-summary.mjs';
 // 「仅@」模式（mention-only）的纯函数判定：群聊只处理被 @ / 被引用 / 被叫到名字的消息。
-import { buildMentionAliases, evaluateMentionOnlyMessage, MENTION_ONLY_MODE } from './mention-only.js';
+import { buildMentionAliases, detectMention, evaluateMentionOnlyMessage, MENTION_ONLY_MODE } from './mention-only.js';
 // 回忆检索：归档写入 + 纯函数检索（仅在 web 域 / 管理员回合暴露工具）。
 import { searchHistoryMessages, canUseUserScope } from './core/history-search.mjs';
 import { appendArchive, readArchive, ARCHIVE_DIR_NAME } from './history-archive.mjs';
@@ -17347,7 +17347,23 @@ async function waitForWorkbuddySlot(key, sessionId) {
     // 管理命令：仅管理员（ownerQQ）可用，且由桥接直接执行（硬性，不经过模型）
     if (plainContent.startsWith('/')) {
       if (!isOwner) {
-        await sendToQQ(key, '管理命令仅管理员可用。');
+        // 群里有人发 /xxx 不等于在叫机器人：只有被 @、引用了机器人、或叫到名字时才回提示。
+        // 否则每条路人的 / 都会被回一句「管理命令仅管理员可用」，就是抢话。
+        // 私聊本身就是对机器人说话，保持回提示。
+        const addressedToBot = kind !== 'group' || detectMention({
+          message: event?.message ?? [],
+          text: plainContent,
+          quoteTargetIsSelf,
+          selfIds: [event?.self_id, selfUserId, cfg.unifiedConsole?.napcatQQ, cfg.botQQ, cfg.selfQQ],
+          aliases: buildMentionAliases({
+            configured: cfg.mentionOnly?.aliases,
+            roleName: roleState.role,
+            nickname: selfDisplayName || selfNickname
+          })
+        }).matched;
+        if (addressedToBot) {
+          await sendToQQ(key, '管理命令仅管理员可用。');
+        }
         return;
       }
       // 显式功能路由：/vision、/sticker、/voice、/web、/chat、/auto。
