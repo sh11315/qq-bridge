@@ -1,4 +1,5 @@
 {
+  "schemaVersion": 1,
   "dsh": {
     "baseUrl": "http://127.0.0.1:3080",
     "provider": "deepseek-official",
@@ -39,7 +40,8 @@
   "ownerQQ": null,
   "adminTurnTools": {
     "enabled": true,
-    "allowLocal": true
+    "allowLocal": true,
+    "autoWakeLocal": false
   },
   "sessionCwd": "",
   "agentPreset": "qq-chat",
@@ -279,25 +281,6 @@
       "rotateCooldownMs": 600000
     },
     "initialPromptMaxChars": 2000,
-    "memory": {
-      "autoRecall": true,
-      "limit": 6,
-      "serendipity": 0.18,
-      "autoEmotion": true
-    },
-    "userMemory": {
-      "enabled": true,
-      "maxUsers": 5000
-    },
-    "photoMemory": {
-      "enabled": true,
-      "maxPhotos": 300,
-      "recallLimit": 3,
-      "maxChars": 900,
-      "keepDays": 365,
-      "storeOriginals": true,
-      "maxOriginalBytes": 8388608
-    },
     "media": {
       "maxBytes": 8388608,
       "maxFetchBytes": 16777216,
@@ -348,6 +331,18 @@
     "allowImages": false,
     "maxReplyChars": 1000,
     "useRoleHint": true
+  },
+  "imageGen": {
+    "enabled": false,
+    "provider": "openai",
+    "baseUrl": "",
+    "apiKey": "",
+    "model": "",
+    "size": "1024x1024",
+    "timeoutMs": 180000,
+    "maxBytes": 12582912,
+    "maxPerDay": 20,
+    "minIntervalMs": 5000
   },
   "unifiedConsole": {
     "port": 7788,

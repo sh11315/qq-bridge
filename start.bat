@@ -5,6 +5,9 @@ rem Harden state/ ACLs (Windows needs WRITE_DAC; the directory owner normally ha
 rem so no UAC prompt in the usual case). This NEVER blocks startup: if it cannot get
 rem permission it prints a copy-pasteable command and exits 0.
 rem See docs/guides/SECURITY_BASELINE.md ("secrets at rest").
+rem Read-only config shape check (schemaVersion / unknown top-level keys).
+rem Warnings never block startup; run node scripts\validate-config.mjs to see details.
+node scripts\validate-config.mjs --quiet
 node scripts\harden-state-acl.mjs --quiet
 rem Single instance: if 3100 is already listening, do NOT start a second copy.
 rem The lock-file guard in src/bridge.js would exit 2 and leave a paused window
