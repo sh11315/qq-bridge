@@ -103,7 +103,8 @@ node scripts/setup-dsh.mjs web
 
 | 项目 | 地址 | 说明 |
 | --- | --- | --- |
-| qq-bridge 源码 | <https://github.com/Derpyu520/qq-bridge> | 公开仓库；本包基于其 `master` 的定制快照（本地无 remote） |
+| qq-bridge 源码（本版） | <https://github.com/sh11315/qq-bridge> | 本定制版；默认分支 `main` 就是 0.2.1-r1，部署请 clone 这个 |
+| qq-bridge 上游 | <https://github.com/Derpyu520/qq-bridge> | 原项目；本包基于其 `master` 的定制快照 |
 | 上游分支 | `main`、`dev`、`docs/full-review`、`feat/dsh-0.2.2-adaptation` | `main` HEAD 实测 `12e66d2…`；0.2.2 适配在 feature 分支 |
 | DeepSeek Harness 官网 | <https://www.deepseek.com/harness/> | 下载/文档入口 |
 | DSH 源码 | <https://github.com/deepseek-ai/deepseek-harness> | 版本与 CLI 说明 |
@@ -111,7 +112,14 @@ node scripts/setup-dsh.mjs web
 | SnowLuma | <https://github.com/SnowLuma/SnowLuma> | QQ 网关（OneBot v11） |
 | SnowLuma Releases | <https://github.com/SnowLuma/SnowLuma/releases/latest> | 选 **win-x64 完整版**（自带运行时）；Lite 需 Node 24+ |
 
-克隆上游（仅在你需要 diff/升级时）：
+部署用（推荐）：
+
+```powershell
+git clone https://github.com/sh11315/qq-bridge.git
+cd qq-bridge
+```
+
+只在你需要 diff / 升级时，再拉上游：
 
 ```powershell
 git clone https://github.com/Derpyu520/qq-bridge.git qq-bridge-upstream
