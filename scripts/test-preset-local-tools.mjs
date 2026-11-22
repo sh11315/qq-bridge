@@ -108,8 +108,14 @@ const OPTIONAL_BUNDLE_TOOLS = new Set(['subagent_codex', 'subagent_claude_code']
  * 现在只保留一条实现，两边不可能再漂移。
  */
 function collectDshToolNames() {
-  const { names } = collectDshToolNamesShared();
-  return names.size === 0 ? null : new Set(names.keys());
+  // CI（没有本机 DSH 安装）会在这里拿不到 node_modules：这不是代码失败，
+  // 而是「没有可对账的安装」，返回 null 让调用方跳过，与 names.size === 0 同义。
+  try {
+    const { names } = collectDshToolNamesShared();
+    return names.size === 0 ? null : new Set(names.keys());
+  } catch {
+    return null;
+  }
 }
 /** 允许出现在名单里、但不属于"本地执行"语义的名字（开发/注入器）。 */
 const DEV_TOOL_PREFIX = /^dev_/;
