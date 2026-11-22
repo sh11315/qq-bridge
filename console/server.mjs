@@ -32,6 +32,8 @@ import crypto from 'node:crypto';
 import { spawn, execFileSync, execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { NodeApiClient, unwrap } from '../src/dsh-client.js';
+import { validateConfig } from '../src/config-schema.js';
+import { redactLogText } from '../src/log-redact.js';
 import {
   API_DEFAULTS,
   ApiChatClient,
@@ -158,7 +160,7 @@ const DSH_INSTALL = (() => {
   if (env) return env;
   const local = String(process.env.LOCALAPPDATA || '').trim();
   if (local) return path.join(local, 'Programs', 'DeepSeek Harness');
-  return 'C:\\Users\\example\\AppData\\Local\\Programs\\DeepSeek Harness';
+  return 'C:\\Users\\1\\AppData\\Local\\Programs\\DeepSeek Harness';
 })();
 const DEFAULT_NAPCAT_DIR = (() => {
   const env = String(process.env.QQB_NAPCAT_DIR || '').trim();
@@ -166,7 +168,7 @@ const DEFAULT_NAPCAT_DIR = (() => {
   // 仓库自带的 docker 模式是最常见的换机形态；没有才回落到旧的本机 shell 目录。
   const repoDocker = path.join(ROOT, 'napcat', 'docker');
   if (fs.existsSync(path.join(repoDocker, 'compose.yaml'))) return repoDocker;
-  return 'C:\\Users\\example\\WorkBuddy AI\\2026-10-24-00-22-18\\napcat\\shell';
+  return 'C:\\Users\\1\\WorkBuddy AI\\2026-10-24-00-22-18\\napcat\\shell';
 })();
 const REASONING_EFFORTS = ['auto', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'ultra', 'max'];
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
@@ -726,10 +728,33 @@ const SECRET_REDACTIONS = [
   [/(\bbearer\s+)([A-Za-z0-9._~+/=-]{12,})/gi, '$1***'],
 ];
 
+// 与 bridge 共用同一套日志脱敏：token / Authorization / Cookie / QQ 号 / 绝对路径。
+// 已知令牌从 config 与 state/console-token 精确登记，裸串也能打码。
+const CONSOLE_LOG_SECRETS = new Set();
+let consoleLogSecretsReady = false;
+function rememberConsoleLogSecrets() {
+  const cfg = paths.cfg || {};
+  const values = [
+    cfg.snowluma?.accessToken,
+    cfg.dsh?.authToken,
+    cfg.api?.apiKey,
+    cfg.imageGen?.apiKey,
+    cfg.unifiedConsole?.token,
+    cfg.ownerQQ,
+    paths.napcatQQ,
+    readConsoleToken(),
+  ];
+  for (const value of values) {
+    if (typeof value === 'string' && value.length >= 6) CONSOLE_LOG_SECRETS.add(value);
+  }
+}
+
 function redactSecrets(text) {
-  let out = text;
-  for (const [re, repl] of SECRET_REDACTIONS) out = out.replace(re, repl);
-  return out;
+  if (!consoleLogSecretsReady) {
+    consoleLogSecretsReady = true;
+    try { rememberConsoleLogSecrets(); } catch { /* 配置未就绪时用通用规则 */ }
+  }
+  return redactLogText(text, CONSOLE_LOG_SECRETS);
 }
 
 // 子进程的 stdout 是「fd 直接重定向到文件」的，pushLog 的脱敏管不到落盘那一份。
@@ -1770,26 +1795,12 @@ async function startNapcatDocker() {
     pushLog('console', 'NapCat(Docker) 启动失败：找不到 docker 命令。先装 Docker Desktop（scripts\\napcat-docker-install.ps1，装完必须重启电脑）', 'error');
     return false;
   }
-  // Docker Desktop 由「服务 + 用户态程序」两部分组成：服务被停掉时，只启动桌面程序也起不来引擎。
-  ensureDockerService();
-  // Docker Desktop 是用户态程序：开机后不点它，daemon 不会自己起来
+  // 自启策略：qq-bridge 不再拉起 Docker Desktop。
+  // Docker Desktop 一旦被拉起会弹面板，并可能在系统里留下自启动/恢复入口；
+  // 需要 daemon 时由用户手动启动，控制台只提示，不代劳。
   if (!dockerReady(docker)) {
-    const desktop = dockerDesktopExe();
-    if (!desktop) {
-      pushLog('console', `NapCat(Docker) 启动失败：docker 命令在（${docker}）但找不到 Docker Desktop.exe，请手动启动 Docker Desktop`, 'error');
-      return false;
-    }
-    pushLog('console', 'Docker Desktop 未就绪，正在启动（首次启动要 1~2 分钟，别重复点启动）…');
-    try {
-      spawn(desktop, [], { windowsHide: true, detached: true, stdio: 'ignore' }).unref();
-    } catch (err) {
-      pushLog('console', `NapCat(Docker) 拉起 Docker Desktop 失败：${err.message}`, 'error');
-      return false;
-    }
-    if (!(await waitDockerReady(docker, 180_000))) {
-      pushLog('console', 'Docker Desktop 启动超时：看任务栏鲸鱼图标是否要求登录/接受协议/更新 WSL2，或重启电脑后再试', 'error');
-      return false;
-    }
+    pushLog('console', 'Docker Desktop 未运行：已禁用自动拉起（避免自启动/弹窗）。请手动启动 Docker Desktop 后重试。', 'warn');
+    return false;
   }
   const composeFile = dockerComposePath();
   if (!fs.existsSync(composeFile)) {
@@ -1804,30 +1815,7 @@ async function startNapcatDocker() {
     pushLog('console', `NapCat(Docker) docker compose up -d 完成${last ? `：${last}` : ''}`);
   } catch (err) {
     const detail = String(err.stderr || err.stdout || err.message || '').trim().split(/\r?\n/).slice(-3).join(' | ');
-    // Docker Desktop 报 "unable to start" 时通常是引擎服务/桌面程序没起来，补一轮再试一次，避免自愈空转。
-    if (/unable to start|is the docker daemon running|Cannot connect to the Docker daemon/i.test(detail)) {
-      pushLog('console', 'NapCat(Docker) 引擎未就绪，尝试拉起 Docker 服务后重试一次…', 'warn');
-      ensureDockerService();
-      const desktop = dockerDesktopExe();
-      if (desktop) { try { spawn(desktop, [], { windowsHide: true, detached: true, stdio: 'ignore' }).unref(); } catch { /* ignore */ } }
-      if (await waitDockerReady(docker, 120_000)) {
-        try {
-          const out2 = execFileSync(docker, ['compose', '-f', composeFile, 'up', '-d'], {
-            encoding: 'utf8', timeout: 240_000, windowsHide: true, cwd: paths.napcatDir,
-          });
-          const last2 = out2.trim().split(/\r?\n/).filter(Boolean).pop() || '';
-          pushLog('console', `NapCat(Docker) 重试 compose up -d 完成${last2 ? `：${last2}` : ''}`);
-          ensureNapcatDockerLogStream();
-          const st2 = await waitNapcatReady(null, 150_000);
-          if (st2 === 'ws') { pushLog('console', 'NapCat(Docker) 已就绪（3001 可连）'); return true; }
-          if (st2 === 'webui') { pushLog('console', 'NapCat(Docker) 容器已启动，等待扫码登录（开 http://127.0.0.1:6099）', 'warn'); return true; }
-        } catch (err2) {
-          const d2 = String(err2.stderr || err2.stdout || err2.message || '').trim().split(/\r?\n/).slice(-2).join(' | ');
-          pushLog('console', `NapCat(Docker) 重试仍失败：${d2 || '未知错误'}`, 'error');
-        }
-      }
-    }
-    pushLog('console', `NapCat(Docker) docker compose up 失败：${detail || '未知错误'}（镜像拉不下来就先配 Docker 镜像加速）`, 'error');
+    pushLog('console', `NapCat(Docker) docker compose up 失败：${detail || '未知错误'}（Docker Desktop 需手动启动；镜像拉不下来就先配 Docker 镜像加速）`, 'error');
     return false;
   }
   ensureNapcatDockerLogStream();
@@ -1862,6 +1850,28 @@ async function napcatQuickLogin(uin) {
   }
 }
 
+// DSH 启动路径白名单：dshExe 必须是安装根下的 DeepSeek Harness.exe，
+// dshCli 必须是 app.asar/runtime 里的 dsh-desktop-host cli.js。
+// 目的不是防 owner，而是防「拿到控制台 token 后改写 unifiedConsole.dshCli 拼执行链」。
+function isTrustedDshRuntime(exePath, cliPath) {
+  try {
+    const exe = path.resolve(String(exePath || ''));
+    const exeName = path.basename(exe).toLowerCase();
+    if (exeName !== 'deepseek harness.exe' && exeName !== 'dsh.exe') return false;
+    if (!fs.existsSync(exe)) return false;
+    // 安装根旁边必须有 resources（app.asar 或 runtime 都在里面）。
+    if (!fs.existsSync(path.join(path.dirname(exe), 'resources'))) return false;
+    const cli = String(cliPath || '').replace(/\//g, '\\').toLowerCase();
+    if (!path.isAbsolute(cli)) return false;
+    if (!cli.endsWith('\\cli.js')) return false;
+    if (!cli.includes('\\resources\\')) return false;
+    if (!cli.includes('\\@deepseek-ai\\dsh-desktop-host\\')) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function startDsh() {
   if (await probe(paths.dshPort)) { pushLog('console', `DSH Web 已在运行（${paths.dshPort} 可连）`); return true; }
   if (starting.dsh) { pushLog('console', 'DSH Web 正在启动中，跳过重复拉起'); return false; }
@@ -1870,9 +1880,9 @@ async function startDsh() {
     await waitPortGone(paths.dshPort, 15_000);
     if (!(await clearStalePort(paths.dshPort, 'DSH Web'))) return false;
     // cli.js 在 app.asar 里，普通 node 的 existsSync 看不到（asar 是虚拟归档），
-    // 所以这里只校验 exe；cli.js 由 Electron 运行时（ELECTRON_RUN_AS_NODE）自己读。
-    if (!fs.existsSync(paths.dshExe)) {
-      pushLog('console', `DSH 启动失败：找不到运行时 ${paths.dshExe}`, 'error');
+    // 所以 cli 只做路径形状校验，exe 做存在性校验。
+    if (!isTrustedDshRuntime(paths.dshExe, paths.dshCli)) {
+      pushLog('console', `DSH 启动失败：dshExe/dshCli 不在受信任的安装路径形状内（${paths.dshExe} / ${paths.dshCli}）`, 'error');
       return false;
     }
     spawnLogged('dsh', paths.dshExe, [
@@ -3709,7 +3719,21 @@ function listBackups() {
   return out.sort((a, b) => b.createdAt - a.createdAt);
 }
 
-const BACKUP_STATE_SKIP = /\.(log|lock)$/i;
+const BACKUP_STATE_SKIP = /\.(log|lock)$|^console-token$|^workbuddy-env\.json$|\.bak-/i;
+const BACKUP_SECRET_FIELD_RE = /^(agentToken|accessToken|authToken|apiKey|api_key|consoleToken|password|secret|token)$/i;
+
+/** 备份里的密钥字段统一清空：备份是「可搬走的配置快照」，不应携带活令牌。 */
+function redactBackupValue(value, depth = 0) {
+  if (depth > 12) return value;
+  if (Array.isArray(value)) return value.map((v) => redactBackupValue(v, depth + 1));
+  if (!value || typeof value !== 'object') return value;
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (BACKUP_SECRET_FIELD_RE.test(k)) out[k] = '';
+    else out[k] = redactBackupValue(v, depth + 1);
+  }
+  return out;
+}
 
 function createBackup(note = 'manual') {
   fs.mkdirSync(BACKUPS_DIR, { recursive: true });
@@ -3726,8 +3750,21 @@ function createBackup(note = 'manual') {
       copied.push({ rel, size: st.size });
     } catch { /* 跳过读不到的文件 */ }
   };
+  const copyJsonRedacted = (src, rel) => {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(src, 'utf8'));
+      const dst = path.join(dir, rel);
+      fs.mkdirSync(path.dirname(dst), { recursive: true });
+      fs.writeFileSync(dst, JSON.stringify(redactBackupValue(parsed), null, 2), 'utf8');
+      const st = fs.statSync(dst);
+      copied.push({ rel, size: st.size, redacted: true });
+    } catch {
+      // 解析失败就不复制，避免把未脱敏的原文带进备份。
+      pushLog('console', `备份跳过无法脱敏的文件：${rel}`, 'warn');
+    }
+  };
 
-  if (fs.existsSync(CONFIG_PATH)) copyFile(CONFIG_PATH, 'config.json');
+  if (fs.existsSync(CONFIG_PATH)) copyJsonRedacted(CONFIG_PATH, 'config.json');
   if (fs.existsSync(CONFIG_EXAMPLE_PATH)) copyFile(CONFIG_EXAMPLE_PATH, 'config.example.json');
 
   let stateFiles = [];
@@ -3738,6 +3775,11 @@ function createBackup(note = 'manual') {
     const src = path.join(STATE_DIR, e.name);
     const st = fileStat(src);
     if (st.size > 8 * 1024 * 1024) continue; // 超大文件（异常膨胀）跳过
+    // social-v2.json 里每个会话都带 agentToken；备份必须脱敏，否则等于把活令牌装进 zip。
+    if (e.name === 'social-v2.json') {
+      copyJsonRedacted(src, path.join('state', e.name));
+      continue;
+    }
     copyFile(src, path.join('state', e.name));
   }
 
@@ -3751,6 +3793,7 @@ function createBackup(note = 'manual') {
   const bytes = copied.reduce((n, f) => n + f.size, 0);
   const meta = {
     name, createdAt: Date.now(), note, files: copied.length, bytes, version: CONSOLE_VERSION,
+    secretsRedacted: copied.some((f) => f.redacted),
     entries: copied.map((f) => f.rel),
   };
   fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify(meta, null, 2), 'utf8');
@@ -3775,7 +3818,12 @@ function restoreBackup(name) {
   if (!entries.length) return { ok: false, message: '这个备份里没有可恢复的文件（meta.json 缺失）' };
   // 恢复前先给当前状态再备份一份，避免恢复错了无法回头
   const pre = createBackup('pre-restore');
+  // 不信任 meta.entries 里的路径/大小：逐文件 stat，超限直接跳过，
+  // 避免被篡改的备份目录（或异常膨胀文件）在恢复时拖垮磁盘。
+  const MAX_RESTORE_FILE_BYTES = 50 * 1024 * 1024;
+  const MAX_RESTORE_TOTAL_BYTES = 512 * 1024 * 1024;
   let restored = 0;
+  let restoredBytes = 0;
   for (const rel of entries) {
     const src = path.join(dir, rel);
     const dst = path.join(ROOT, rel);
@@ -3784,8 +3832,19 @@ function restoreBackup(name) {
     if (!/^(config\.json|config\.example\.json|state[\\/][^\\/]+|roles[\\/][^\\/]+\.md)$/i.test(norm)) continue;
     if (!path.resolve(dst).startsWith(path.resolve(ROOT) + path.sep)) continue;
     try {
+      const st = fs.statSync(src);
+      if (!st.isFile()) continue;
+      if (st.size > MAX_RESTORE_FILE_BYTES) {
+        pushLog('console', `恢复跳过超大文件 ${rel}（${fmtBytes(st.size)}）`, 'warn');
+        continue;
+      }
+      if (restoredBytes + st.size > MAX_RESTORE_TOTAL_BYTES) {
+        pushLog('console', `恢复已达到总大小上限 ${fmtBytes(MAX_RESTORE_TOTAL_BYTES)}，停止`, 'warn');
+        break;
+      }
       fs.mkdirSync(path.dirname(dst), { recursive: true });
       fs.copyFileSync(src, dst);
+      restoredBytes += st.size;
       restored += 1;
     } catch { /* 单个失败不影响其它 */ }
   }
@@ -4843,7 +4902,7 @@ const server = http.createServer(async (req, res) => {
       let dshError = '';
       try { catalog = await getModelCatalog(); } catch (err) { dshError = err.message; }
       try { dshDefault = await readAgentDefaultModel(); } catch (err) { dshError = dshError || err.message; }
-      return json(res, 200, { ok: true, config: paths.cfg.dsh ?? {}, catalog, dshDefault, dshError, efforts: REASONING_EFFORTS });
+      return json(res, 200, { ok: true, config: maskSecrets(paths.cfg.dsh ?? {}), catalog, dshDefault, dshError, efforts: REASONING_EFFORTS });
     }
 
     // ── NapCat 掉线历史 ──
@@ -5354,9 +5413,17 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { ok: false, message: `mode 只能是 ${CONSOLE_MODES.join(' / ')}` });
       }
       if (dryRun) return json(res, 200, { ok: true, dryRun: true, mode });
-      fs.mkdirSync(STATE_DIR, { recursive: true });
-      fs.writeFileSync(MODE_FILE, JSON.stringify({ mode }, null, 2), 'utf8');
+      // 先让桥接写（它会保留 closedAgentPreset/dshSynced/dshSeenMode 并原子落盘）。
+      // 桥接离线时再本地合并写，绝不能只写 { mode } 把对账字段冲掉。
       const hot = await callBridge('/api/mode', 'POST', { mode });
+      if (!hot.ok && hot.offline) {
+        const existing = readJsonFileSafe(MODE_FILE) || {};
+        const next = { ...existing, mode, dshSynced: false };
+        fs.mkdirSync(STATE_DIR, { recursive: true });
+        const tmp = `${MODE_FILE}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf8');
+        fs.renameSync(tmp, MODE_FILE);
+      }
       pushLog('console', `模式已设为 ${mode}`);
       await broadcastStatus();
       // mention-only 是后加的模式：运行中的 DSH 若还挂着旧版 qq-mode 插件 schema，
@@ -6791,6 +6858,15 @@ server.listen(paths.port, '127.0.0.1', () => {
   pushLog('console', `统一控制台已启动：http://127.0.0.1:${paths.port}（v${CONSOLE_VERSION}）`);
   pushLog('console', IS_ELEVATED ? '控制台以管理员权限运行' : '控制台以普通权限运行（需要管理员操作时运行 scripts\\enable-admin-mode.ps1）');
   pushLog('console', `项目目录 ${ROOT}`);
+  try {
+    const check = readConfigSafe();
+    if (check.ok) {
+      const schema = validateConfig(check.cfg, readJsonFileSafe(CONFIG_EXAMPLE_PATH));
+      if (schema.warnings.length) {
+        pushLog('console', `配置校验：${schema.warnings.length} 条警告（node scripts/validate-config.mjs 查看）`, 'warn');
+      }
+    }
+  } catch { /* 校验失败不影响控制台启动 */ }
   // 自愈守护必须等 listen 成功之后再起：启动阶段（端口占用、配置错误）不该去拉服务，
   // 手动「全部启动」进行中也会通过 lifecycleDepth 让自愈自动让路。
   startAutoHealGuard();

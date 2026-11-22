@@ -25,6 +25,7 @@ import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-p
 // owner / 白名单命中仍走 DSH Agent，其余会话在 config.api.enabled=true 时走这里。
 import { createApiChatBackend, normalizeApiConfig, DEFAULT_SYSTEM_PROMPT as API_DEFAULT_SYSTEM_PROMPT, maskKey as maskApiKey } from './api-chat.js';
 import { SENSITIVE_RE } from './sensitive.js';
+import { redactLogText } from './log-redact.js';
 import { looksLikeUnfinished } from './v2-wait.js';
 import { compactModelMessage, describeAge } from './qq-model-view.js';
 import { safeFetchBuffer, safeFetchFileBuffer, looksLikeImageBuffer } from './safe-fetch.js';
@@ -950,10 +951,22 @@ function redactSensitiveText(text) {
     const flags = SENSITIVE_RE.flags.includes('g') ? SENSITIVE_RE.flags : SENSITIVE_RE.flags + 'g';
     raw = raw.replace(new RegExp(SENSITIVE_RE.source, flags), '***');
   } catch {}
-  for (const token of KNOWN_AGENT_TOKENS) {
-    if (token && raw.includes(token)) raw = raw.split(token).join('***');
+  // 统一走共享脱敏：token / Authorization / Cookie / QQ 号 / 绝对路径。
+  return redactLogText(raw, KNOWN_AGENT_TOKENS);
+}
+
+// 启动期错误没有走 log()，单独包一层；保留 stack 但同样脱敏。
+const writeStderr = console.error.bind(console);
+function logError(...args) {
+  try {
+    writeStderr(...args.map((arg) => {
+      if (arg instanceof Error) return redactSensitiveText(arg.stack || arg.message);
+      if (typeof arg === 'string') return redactSensitiveText(arg);
+      try { return redactSensitiveText(JSON.stringify(arg)); } catch { return redactSensitiveText(String(arg)); }
+    }));
+  } catch {
+    writeStderr(...args);
   }
-  return raw;
 }
 
 // 防止底层网关把文本中的 [CQ: 当作 CQ 码解析：替换为全角冒号。
@@ -1578,28 +1591,28 @@ function acquireLock() {
             // 而且提示信息把人引向「已有实例在运行」这个错误方向。
             // 这里改成按「疑似过期」处理，但要先确认控制台端口没有被占用。
             if (consolePortInUse()) {
-              console.error(`[bridge] 控制台端口已被占用，判定已有实例在运行（锁文件 PID ${pid} 无权限探测）。`);
+              logError(`[bridge] 控制台端口已被占用，判定已有实例在运行（锁文件 PID ${pid} 无权限探测）。`);
               process.exit(2);
             }
-            console.error(`[bridge] 锁文件 PID ${pid} 无权限探测（EPERM）且控制台端口空闲，按过期锁处理。`);
+            logError(`[bridge] 锁文件 PID ${pid} 无权限探测（EPERM）且控制台端口空闲，按过期锁处理。`);
             stale = true;
           } else {
-            console.error(`[bridge] 已有实例在运行（PID ${pid}，锁文件 ${LOCK_FILE}）。若确认其已死，删除该文件后重试。`);
+            logError(`[bridge] 已有实例在运行（PID ${pid}，锁文件 ${LOCK_FILE}）。若确认其已死，删除该文件后重试。`);
             process.exit(2);
           }
         }
       }
     }
   } catch (readError) {
-    console.error(`[bridge] 无法读取锁文件 ${LOCK_FILE}：${readError?.message ?? readError}`);
+    logError(`[bridge] 无法读取锁文件 ${LOCK_FILE}：${readError?.message ?? readError}`);
     process.exit(1);
   }
   if (stale) {
-    console.error(`[bridge] 检测到过期锁文件（PID 不存在或为空），删除后重试…`);
+    logError(`[bridge] 检测到过期锁文件（PID 不存在或为空），删除后重试…`);
     try { fs.unlinkSync(LOCK_FILE); } catch {}
     if (tryCreate()) return;
   }
-  console.error(`[bridge] 已有实例在运行（锁文件 ${LOCK_FILE}）。若确认其已死，删除该文件后重试。`);
+  logError(`[bridge] 已有实例在运行（锁文件 ${LOCK_FILE}）。若确认其已死，删除该文件后重试。`);
   process.exit(2);
 }
 function releaseLock() {
@@ -1975,7 +1988,7 @@ async function main() {
   if (nodeVersionRaw) {
     const [nodeMajor = 0, nodeMinor = 0] = nodeVersionRaw.split('.').map((n) => Number(n) || 0);
     if (nodeMajor < 22 || (nodeMajor === 22 && nodeMinor < 13)) {
-      console.error(`[bridge] Node 版本过低：当前 ${nodeVersionRaw}，需要 >= 22.13.0（用到 AbortSignal.any / structuredClone / fetch 等）。请安装 Node 22.13+ 后重试。`);
+      logError(`[bridge] Node 版本过低：当前 ${nodeVersionRaw}，需要 >= 22.13.0（用到 AbortSignal.any / structuredClone / fetch 等）。请安装 Node 22.13+ 后重试。`);
       process.exit(2);
     }
   }
@@ -10006,7 +10019,7 @@ async function waitForWorkbuddySlot(key, sessionId) {
     server.on('error', (error) => {
       log(`控制台服务错误: ${error?.message ?? error}`);
       if (error?.code === 'EADDRINUSE') {
-        console.error(`[bridge] 控制台端口 ${port} 已被占用（可能已有实例在运行），退出。`);
+        logError(`[bridge] 控制台端口 ${port} 已被占用（可能已有实例在运行），退出。`);
         process.exit(2);
       }
       process.exit(1);
@@ -19163,7 +19176,7 @@ process.on('uncaughtException', (error) => {
 process.on('exit', () => releaseLock());
 
 main().catch((error) => {
-  console.error('[bridge] 启动失败:', error);
+  logError('[bridge] 启动失败:', error);
   process.exit(1);
 });
 

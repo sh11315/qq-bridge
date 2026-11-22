@@ -10,6 +10,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as markdown from '../src/md-to-plain.js';
 import * as sensitive from '../src/sensitive.js';
+import * as logRedact from '../src/log-redact.js';
 import * as wait from '../src/v2-wait.js';
 import * as safeFetch from '../src/safe-fetch.js';
 import * as mediaNormalize from '../src/media-normalize.js';
@@ -74,6 +75,26 @@ import * as apiChat from '../src/api-chat.js';
 import { unwrap, createTurnCollector } from '../src/dsh-client.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
+export const BRIDGE_CONNECT_MARKER = '  bot.connect().catch((error) => {';
+export const BRIDGE_RETURN_BLOCK_MARKER = 'settingFromDshNamespace, selfIdentityTextV2';
+
+/**
+ * The harness works by exact string surgery on bridge.js. If the marker moves,
+ * the injection silently does nothing and main() would run for real (possibly
+ * connecting to a live QQ gateway). These guards turn that into a loud failure.
+ */
+export function assertBridgeConnectMarker(source) {
+  if (!source.includes(BRIDGE_CONNECT_MARKER)) {
+    throw new Error('audit harness: bot.connect() marker not found — src/bridge.js changed; refusing to evaluate main() against a real gateway');
+  }
+}
+
+export function assertBridgeReturnBlock(source) {
+  if (!source.includes(BRIDGE_RETURN_BLOCK_MARKER)) {
+    throw new Error('audit harness: main() return block not injected — refusing to run bridge against a real gateway');
+  }
+}
+
 export async function bridgeHarness({ config = {}, savedState, files = {}, globals = {}, apiSessions = {} } = {}) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-audit-bridge-'));
   fs.mkdirSync(path.join(temp, 'src'));
@@ -202,7 +223,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   // 在 bot.connect() 之前插入 return：这样 bot 的 open/close/error 事件接线会真实执行
   // （测试可以用 h.bot.emit('open') 驱动「SnowLuma 连上」），而 connect/启动预热/守护循环
   // 仍被跳过，避免测试真的连网关或起定时器。
-  source = source.replace('  bot.connect().catch((error) => {', `
+  assertBridgeConnectMarker(source);
+  source = source.replace(BRIDGE_CONNECT_MARKER, `
   return {
     ensureSession, ensureSlangLearnerSession, resolvePresetName, deliverPrompt, deliverPromptNow, drainPromptQueue, queueChatPrompt,
     sendToQQ, sendStickerV2, handleIncoming, startConsoleServer, cfg, state, api, promptQueues,
@@ -255,6 +277,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     resetEpoch() { sessionEpoch++; },
   };
   bot.connect().catch((error) => {`);
+  assertBridgeReturnBlock(source);
   const timers = new Set();
   // 自定义 fake bot（测试通过 globals 覆盖 SnowLumaWebSocketClient 时）也补上连接事件方法：
   // bridge 会在 bot 上挂 open/close/error，缺了 `on` 会让整个 harness 初始化抛错。
@@ -330,7 +353,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     // VM 里 fetch 是桩、也不该真的打 3080，所以给一个成功桩：checkDsh 照常走完整路径，
     // 同时不会往 calls.http 里掺假请求（那会打乱其它用例对 http 调用的断言）。
     warmSidebarToolRegistration: async () => ({ ok: true, attempts: 1, elapsedMs: 0, agentOpenTools: true }),
-    ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...slang, ...sticker, ...stickerSyncRetry,
+    ...markdown, ...sensitive, ...logRedact, ...wait, ...safeFetch, ...forward, ...slang, ...sticker, ...stickerSyncRetry,
     ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt, ...apiChat, ...mentionOnly, ...roleCard, ...docExtract, ...ownerDmGuard,
     ...board,
     ...featureSessions,
@@ -397,6 +420,14 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   vm.runInContext(`Object.assign(globalThis, (() => { ${modelViewSource}\nreturn { compactModelMessage, compactModelData, serializeModelData, describeAge }; })());`, context);
   vm.runInContext(source + '\nglobalThis.auditReady = main();', context);
   const bridge = await context.auditReady;
+  if (!bridge || typeof bridge !== 'object') {
+    throw new Error('audit harness: main() did not return the audit bindings (globalThis.auditReady is empty)');
+  }
+  const requiredBindings = ['sendToQQ', 'handleIncoming', 'ensureSession', 'cfg', 'state', 'bot'];
+  const missingBindings = requiredBindings.filter((key) => !(key in bridge));
+  if (missingBindings.length) {
+    throw new Error(`audit harness: missing bindings (${missingBindings.join(', ')}) — refusing to continue`);
+  }
   bridge.setPresets(['standard', 'qq-chat', 'qq-chat-v2']);
   bridge.setReady(true);
   return { ...bridge, calls, temp, async close() {

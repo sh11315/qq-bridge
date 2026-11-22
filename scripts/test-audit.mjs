@@ -93,6 +93,10 @@ const tests = [
   // 控制台（7788）安全水位：Host 白名单 / token 定长比较 / HttpOnly cookie / CSP。
   // 之前 7788 只有 listen 127.0.0.1，DNS rebinding 与跨站表单都能碰到写接口。
   'test-console-security.mjs',
+  // 配置只读校验：schemaVersion / 顶层未知字段 / 类型告警；绝不改输入。
+  'test-config-schema.mjs', 'test-log-redact.mjs',
+  // 审计 harness 的字符串注入保险：marker 消失必须抛错，不能静默跑真 main()。
+  'test-audit-harness-guard.mjs',
 ];
 let failed = 0;
 let skipped = 0;
