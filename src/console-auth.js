@@ -83,8 +83,10 @@ export const CONSOLE_CSP = [
   "default-src 'self'",
   "base-uri 'none'",
   "object-src 'none'",
-  "frame-ancestors 'none'",
-  "frame-src 'none'",
+  // 控制台自己会用同源 iframe 嵌「记忆银河 / 记忆网络」页面；
+  // 只放同源，仍然禁止第三方站点嵌套或加载外部 frame。
+  "frame-ancestors 'self'",
+  "frame-src 'self'",
   "form-action 'self'",
   "img-src 'self' data: blob: https:",
   "media-src 'self' blob: https:",

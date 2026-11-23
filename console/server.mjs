@@ -61,7 +61,8 @@ const STARTED_AT = Date.now();
 const CONSOLE_SECURITY_HEADERS = Object.freeze({
   'Content-Security-Policy': CONSOLE_CSP,
   'X-Content-Type-Options': 'nosniff',
-  'X-Frame-Options': 'DENY',
+  // 记忆银河用同源 iframe；DENY 会让整块画布变黑。
+  'X-Frame-Options': 'SAMEORIGIN',
   'Referrer-Policy': 'no-referrer',
 });
 // 是否以管理员权限运行（Windows 高完整性级别 S-1-16-12288；非 Windows 用 uid）。
@@ -160,7 +161,7 @@ const DSH_INSTALL = (() => {
   if (env) return env;
   const local = String(process.env.LOCALAPPDATA || '').trim();
   if (local) return path.join(local, 'Programs', 'DeepSeek Harness');
-  return 'C:\\Users\\1\\AppData\\Local\\Programs\\DeepSeek Harness';
+  return 'C:\\Users\\example\\AppData\\Local\\Programs\\DeepSeek Harness';
 })();
 const DEFAULT_NAPCAT_DIR = (() => {
   const env = String(process.env.QQB_NAPCAT_DIR || '').trim();
@@ -168,7 +169,7 @@ const DEFAULT_NAPCAT_DIR = (() => {
   // 仓库自带的 docker 模式是最常见的换机形态；没有才回落到旧的本机 shell 目录。
   const repoDocker = path.join(ROOT, 'napcat', 'docker');
   if (fs.existsSync(path.join(repoDocker, 'compose.yaml'))) return repoDocker;
-  return 'C:\\Users\\1\\WorkBuddy AI\\2026-10-24-00-22-18\\napcat\\shell';
+  return 'C:\\Users\\example\\WorkBuddy AI\\2026-10-24-00-22-18\\napcat\\shell';
 })();
 const REASONING_EFFORTS = ['auto', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'ultra', 'max'];
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'];

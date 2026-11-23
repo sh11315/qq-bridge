@@ -67,7 +67,7 @@ test('Set-Cookie：HttpOnly / SameSite=Strict / Path=/ / Max-Age', () => {
 test('CSP 至少挡住外部脚本、对象、点击劫持与 base 改写', () => {
   assert.ok(CONSOLE_CSP.includes("script-src 'self'"));
   assert.ok(CONSOLE_CSP.includes("object-src 'none'"));
-  assert.ok(CONSOLE_CSP.includes("frame-ancestors 'none'"));
+  assert.ok(CONSOLE_CSP.includes("frame-ancestors 'self'"));
   assert.ok(CONSOLE_CSP.includes("base-uri 'none'"));
   assert.ok(CONSOLE_CSP.includes("form-action 'self'"));
   assert.ok(CONSOLE_CSP.includes('img-src'));
